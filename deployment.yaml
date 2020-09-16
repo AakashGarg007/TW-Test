@@ -1,0 +1,88 @@
+---
+#Adding MariaDB Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediawiki-db-srv
+  labels:
+    app: mediawiki-db
+spec:
+  type: NodePort
+  ports:
+    - port: 3306
+      protocol: TCP
+  selector:
+    app: mediawiki-db
+---
+#MariaDB Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediawiki-db
+spec:
+  selector:
+    matchLabels:
+      app: mediawiki-db
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mediawiki-db
+    spec:
+      containers:
+        - name: mediawiki-db-container
+          image: mariadb:10.5.5
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MYSQL_DATABASE
+              value: my_wiki
+            - name: MYSQL_USER
+              value: wikiuser
+            - name: MYSQL_PASSWORD
+              value: example
+            - name: MYSQL_ROOT_PASSWORD
+              value: example
+---
+#Adding a MediaWiki Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediawiki-srv
+  labels:
+    app: mediawiki-app
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 80
+      nodePort: 30080
+      protocol: TCP
+  selector:
+    app: mediawiki-app
+---
+#MediaWiki Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediawiki-app
+spec:
+  selector:
+    matchLabels:
+      app: mediawiki-app
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: mediawiki-app
+    spec:
+      containers:
+        - name: mediawiki-container
+          image: mediawiki:1.34.2-fpm-alpine
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /var/www/html/images
+              name: mediawiki-volume
+          ports:
+            - containerPort: 80
+      volumes:
+        - name: mediawiki-volume

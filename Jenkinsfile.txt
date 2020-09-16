@@ -1,0 +1,202 @@
+pipeline {
+    agent any
+
+    environment {
+        CONTAINER_BASE_TAG="base-smc"
+        CONTAINER_DIALOG_TAG="dialog-smc"
+        CONTAINER_CENTRAL_TAG="central-smc"
+        CONTAINER_REPLICATOR_TAG="replicator-smc"
+        CONTAINER_SUM_TAG="sum-smc"
+    }
+    stages {
+        stage('Initial Setup') {
+            steps {
+                deleteDir()
+                initialSetup()
+            }
+        }
+        //Download Virus scanner and then copy .sh file to /dialog/dl
+        stage('Download Artifacts') {
+            steps {
+                downloadArtifacts()
+            }
+        }
+        stage('Build Base Image') {
+            steps {
+                buildBaseImage()
+            }
+        }
+        stage('Build Container Images') {
+            steps {
+                buildContainerImages()
+            }
+        }
+        stage('Test Images') {
+            steps {
+                echo ""
+            }
+        }
+        stage('Scan Images') {
+            steps {
+                echo ""
+            }
+        }
+        stage('Release Approval') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: 'Request your approval to Release to Docker Registry', ok: 'Approve'
+                }
+            }
+        }
+        stage('Push to Registry') {
+            steps {
+                pushToRegistry()
+            }
+        }
+    }
+    post { 
+        failure {
+            emailext attachLog: true, body: '$DEFAULT_CONTENT', subject: "Build_Deploy_ABAP_Image", to: 'aakash.garg@sap.com'
+            //Slack and MS Team Notification can also be added
+        }
+    }
+}
+
+def initialSetup() {
+    script {
+        checkout scm
+        def datas = readYaml file: './config.yml'
+        SAPEXE_VERSION=datas.SAPEXE_VERSION
+        SAPEXEDB_VERSION=datas.SAPEXEDB_VERSION
+        IMDB_CLIENT_VERSION=datas.IMDB_CLIENT_VERSION
+        SUMINT_VERSION=datas.SUMINT_VERSION
+        SAPHOSTAGENT_VERSION=datas.SAPHOSTAGENT_VERSION
+        VIRUS_SCAANER=datas.VIRUS_SCAANER
+        BOWBRIDGE_AV_VERSION=datas.BOWBRIDGE_AV_VERSION
+        DOWNLOAD_REPO_URL=datas.DOWNLOAD_REPO_URL
+        GIT_URL=datas.GIT_URL
+        OPENSUSE_VERSION=datas.OPENSUSE_VERSION
+        CONTAINER_REGISTRY=datas.CONTAINER_REGISTRY
+        CONTAINER_VERSION=datas.CONTAINER_VERSION
+        BASE_IMAGE=datas.BASE_IMAGE
+    }
+    // Login to SAP internal docker registry
+    withCredentials([usernamePassword(credentialsId: 'Docker_Artifactory_Cred', passwordVariable: 'password', usernameVariable: 'username')]) {
+        withEnv(["CONTAINER_REGISTRY=${CONTAINER_REGISTRY}"]) {
+            sh label: '', script: 'docker login -u ${username} -p ${password} ${CONTAINER_REGISTRY}'
+        }
+    }
+    sh '''
+        mkdir ./netweaverbase/dl 
+        mkdir ./updater/dl
+        mkdir ./dialog/dl
+    '''
+}
+
+def downloadArtifacts() {
+    withEnv(["SAPEXE_VERSION=${SAPEXE_VERSION}", "SAPEXEDB_VERSION=${SAPEXEDB_VERSION}", "IMDB_CLIENT_VERSION=${IMDB_CLIENT_VERSION}", "SUMINT_VERSION=${SUMINT_VERSION}", "SAPHOSTAGENT_VERSION=${SAPHOSTAGENT_VERSION}", "VIRUS_SCAANER=${VIRUS_SCAANER}", "BOWBRIDGE_AV_VERSION=${BOWBRIDGE_AV_VERSION}", "DOWNLOAD_REPO_URL=${DOWNLOAD_REPO_URL}"]) {
+        parallel(
+            SAPEXE: {
+                sh label: '', script: 'curl -s -o ./netweaverbase/dl/"${SAPEXE_VERSION}" "${DOWNLOAD_REPO_URL}"/"${SAPEXE_VERSION}"'
+            },
+            SAPEXEDB: {
+                sh label: '', script: 'curl -s -o ./netweaverbase/dl/${SAPEXEDB_VERSION} ${DOWNLOAD_REPO_URL}/${SAPEXEDB_VERSION}'
+            },
+            IMDB_CLIENT: {
+                sh label: '', script: 'curl -s -o ./netweaverbase/dl/${IMDB_CLIENT_VERSION} ${DOWNLOAD_REPO_URL}/${IMDB_CLIENT_VERSION}'
+            },
+            SUMINT: {
+                sh label: '', script: 'curl -s -o ./updater/dl/${SUMINT_VERSION} ${DOWNLOAD_REPO_URL}/${SUMINT_VERSION}'
+            },
+            SAPHOSTAGENT: {
+                sh label: '', script: 'curl -s -o ./updater/dl/${SAPHOSTAGENT_VERSION} ${DOWNLOAD_REPO_URL}/${SAPHOSTAGENT_VERSION}'
+            },
+            VIRUS_SCAANER: {
+                sh label: '', script: 'curl -s -o ${VIRUS_SCAANER} ${DOWNLOAD_REPO_URL}/${VIRUS_SCAANER}'
+                sh '''
+                    mkdir VIRUS_SCAANER
+                    tar -C ./VIRUS_SCAANER -xzf ${VIRUS_SCAANER}
+                    cp ./VIRUS_SCAANER/${BOWBRIDGE_AV_VERSION} ./dialog/dl/${BOWBRIDGE_AV_VERSION}
+                '''
+            }
+        )
+    }
+}
+
+def buildBaseImage() {
+    withEnv(["SAPEXE_VERSION=${SAPEXE_VERSION}", "SAPEXEDB_VERSION=${SAPEXEDB_VERSION}", "IMDB_CLIENT_VERSION=${IMDB_CLIENT_VERSION}","GIT_URL=${GIT_URL}", "OPENSUSE_VERSION=${OPENSUSE_VERSION}", "CONTAINER_REGISTRY=${CONTAINER_REGISTRY}", "CONTAINER_VERSION=${CONTAINER_VERSION}", "BASE_IMAGE=${BASE_IMAGE}"]) {
+        sh '''
+            cd ./netweaverbase/ && docker build --squash \
+                --build-arg BASE_IMAGE=${BASE_IMAGE} \
+                --build-arg OPENSUSE_VERSION=${OPENSUSE_VERSION} \
+                --build-arg IMDB_CLIENT_VERSION=${IMDB_CLIENT_VERSION} \
+                --build-arg SAPEXE_VERSION=${SAPEXE_VERSION} \
+                --build-arg SAPEXEDB_VERSION=${SAPEXEDB_VERSION} \
+                -t ${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG}:${CONTAINER_BASE_TAG}-${CONTAINER_VERSION} .
+        '''
+    }
+}
+
+def buildContainerImages() {
+    withEnv(["SUMINT_VERSION=${SUMINT_VERSION}", "SAPHOSTAGENT_VERSION=${SAPHOSTAGENT_VERSION}", "BOWBRIDGE_AV_VERSION=${BOWBRIDGE_AV_VERSION}", "CONTAINER_REGISTRY=${CONTAINER_REGISTRY}", "CONTAINER_VERSION=${CONTAINER_VERSION}"]) {
+        parallel(
+            DIALOG_IMAGE: {
+                sh '''
+                    cd ./dialog/ && docker build --squash \
+                        --build-arg CONTAINER_REGISTRY=${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG} \
+                        --build-arg NETWEAVERBASE_VERSION=${CONTAINER_BASE_TAG}-${CONTAINER_VERSION} \
+                        --build-arg BOWBRIDGE_AV_VERSION=${BOWBRIDGE_AV_VERSION} \
+                        -t ${CONTAINER_REGISTRY}/${CONTAINER_DIALOG_TAG}:${CONTAINER_DIALOG_TAG}-${CONTAINER_VERSION} .
+                '''
+            },
+            CENTRAL_IMAGE: {
+                sh '''
+                    cd ./central/ && docker build --squash \
+                        --build-arg CONTAINER_REGISTRY=${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG} \
+                        --build-arg NETWEAVERBASE_VERSION=${CONTAINER_BASE_TAG}-${CONTAINER_VERSION} \
+                        -t ${CONTAINER_REGISTRY}/${CONTAINER_CENTRAL_TAG}:${CONTAINER_CENTRAL_TAG}-${CONTAINER_VERSION} .
+                '''
+            },
+            REPLICATOR_IMAGE: {
+                sh '''
+                    cd ./replicator/ && docker build --squash \
+                        --build-arg CONTAINER_REGISTRY=${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG} \
+                        --build-arg NETWEAVERBASE_VERSION=${CONTAINER_BASE_TAG}-${CONTAINER_VERSION} \
+                        -t ${CONTAINER_REGISTRY}/${CONTAINER_REPLICATOR_TAG}:${CONTAINER_REPLICATOR_TAG}-${CONTAINER_VERSION} .
+                '''
+            },
+            UPDATER_IMAGE: {
+                sh '''
+                    cd ./updater/ && docker build --squash \
+                        --build-arg CONTAINER_REGISTRY=${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG} \
+                        --build-arg NETWEAVERBASE_VERSION=${CONTAINER_BASE_TAG}-${CONTAINER_VERSION} \
+                        --build-arg SUMINT_VERSION=${SUMINT_VERSION} \
+                        --build-arg SAPHOSTAGENT_VERSION=${SAPHOSTAGENT_VERSION} \
+                        -t ${CONTAINER_REGISTRY}/${CONTAINER_SUM_TAG}:${CONTAINER_SUM_TAG}-${CONTAINER_VERSION} .
+                '''
+            }
+        )
+    }
+}
+
+def pushToRegistry() {
+    withEnv(["CONTAINER_REGISTRY=${CONTAINER_REGISTRY}", "CONTAINER_VERSION=${CONTAINER_VERSION}"]) {
+        parallel(
+            BASE_IMAGE: {
+                sh 'docker push ${CONTAINER_REGISTRY}/${CONTAINER_BASE_TAG}:${CONTAINER_BASE_TAG}-${CONTAINER_VERSION}'
+            },
+            DIALOG_IMAGE: {
+                sh 'docker push ${CONTAINER_REGISTRY}/${CONTAINER_DIALOG_TAG}:${CONTAINER_DIALOG_TAG}-${CONTAINER_VERSION}'
+            },
+            CENTRAL_IMAGE: {
+                sh 'docker push ${CONTAINER_REGISTRY}/${CONTAINER_CENTRAL_TAG}:${CONTAINER_CENTRAL_TAG}-${CONTAINER_VERSION}'
+            },
+            REPLICATOR_IMAGE: {
+                sh 'docker push ${CONTAINER_REGISTRY}/${CONTAINER_REPLICATOR_TAG}:${CONTAINER_REPLICATOR_TAG}-${CONTAINER_VERSION}'
+            },
+            UPDATER_IMAGE: {
+                sh 'docker push ${CONTAINER_REGISTRY}/${CONTAINER_SUM_TAG}:${CONTAINER_SUM_TAG}-${CONTAINER_VERSION}'
+            }
+        )
+    }
+}

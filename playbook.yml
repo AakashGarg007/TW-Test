@@ -1,0 +1,60 @@
+- hosts: all
+  become: yes
+  tasks:
+    - name: Add Docker repo
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docer-ce.repo
+
+    - name: Install Docker
+      package:
+        name: docker-ce
+        state: latest
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user vagrant to docker group
+      user:
+        name: vagrant
+        groups: docker
+        append: yes
+
+    - name: Reset ssh connection to allow user changes to affect 'current login user'
+      meta: reset_connection
+
+    - name: download minikube version
+      become_user: vagrant
+      get_url:
+        url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        dest: ${HOME}/minikube
+        mode: '0664'
+
+    - name: install minikube
+      shell: install minikube /usr/local/bin/
+
+    - name: start minikube
+      become_user: vagrant
+      shell: minikube start --vm-driver=docker
+
+    - name: add kubernetes repository
+      yum_repository:
+        name: Kubernetes
+        description: Kubernetes
+        baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        gpgcheck: yes
+        repo_gpgcheck: yes
+        gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+    - name: install kubectl
+      yum:
+        name: kubectl
+
+    - name: Create Configmap and Deployment by reading the definition from a local file
+      become_user: vagrant
+      shell: |
+          kubectl create configmap hostname --from-literal=HOSTNAME=$HOSTNAME
+          kubectl apply -f deployment.yaml
